@@ -1,0 +1,4 @@
+# raw/transit_osm.json
+[out:json][timeout:150];(relation["type"="route"]["route"~"^(light_rail|monorail|tram)$"](47.07,-122.55,47.95,-121.9);relation["type"="route"]["route"="train"]["network"~"Sound"](47.0,-122.6,48.0,-121.9););out geom;
+# raw/transit_nodes.json
+[out:json][timeout:100];relation(id:3494092,17499739,3237713,4748655,4755830,3494093,3207386);node(r);out body;
