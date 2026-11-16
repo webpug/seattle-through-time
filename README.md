@@ -3,7 +3,7 @@
 Watch Seattle and King County grow, building by building, from the Denny Party's landing in 1851 to today.
 A Seattle counterpart to Theo Jaffee's [Bay Area Through Time](https://bay.theojaffee.net/), written from scratch.
 
-- Drag the timeline or press play; **Story** runs a guided tour of about thirty stops.
+- Drag the timeline or press play; **Story** runs a guided tour of 36 stops.
 - 760,652 buildings, each drawn in the year the King County Assessor says it was built.
 - Streets, freeways, railways, Link light rail, streetcars and the Monorail appear as they open.
 - Place names change with the years (Duwamps → Seattle, Slaughter → Auburn, Gilman → Issaquah).
