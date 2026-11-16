@@ -45,7 +45,7 @@ function writeHash() {
   clearTimeout(hashTimer);
   hashTimer = setTimeout(() => {
     const c = map.getCenter();
-    history.replaceState(null, '', `${location.pathname}${location.search}#year=${state.year.toFixed(1)}&c=${c.lng.toFixed(5)},${c.lat.toFixed(5)}&z=${map.getZoom().toFixed(2)}&p=${map.getPitch().toFixed(0)}&b=${map.getBearing().toFixed(0)}`);
+    history.replaceState(null, '', `${location.href.split('#')[0]}#year=${state.year.toFixed(1)}&c=${c.lng.toFixed(5)},${c.lat.toFixed(5)}&z=${map.getZoom().toFixed(2)}&p=${map.getPitch().toFixed(0)}&b=${map.getBearing().toFixed(0)}`);
   }, 250);
 }
 
