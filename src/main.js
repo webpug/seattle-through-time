@@ -11,6 +11,7 @@ import { SolidPolygonLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck
 import { DataFilterExtension } from '@deck.gl/extensions';
 import { POP, PLACES, EVENTS, STORY, PARK_YEARS } from './content.js';
 import { createScene, buildLost, hipRoof, kx, KY } from './scene.js';
+import { buildStatic } from './landmarks.js';
 
 const Y0 = 1851, Y1 = 2026.99;
 const $ = (id) => document.getElementById(id);
@@ -65,6 +66,7 @@ const map = new maplibregl.Map({
       rivers: { type: 'geojson', data: DATA + 'rivers.geojson' },
       cities: { type: 'geojson', data: DATA + 'cities.geojson' },
       tideflats: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+      harbor: { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[-122.36, 47.564], [-122.3425, 47.564], [-122.3425, 47.592], [-122.36, 47.592], [-122.36, 47.564]]] } } },
       dem: { type: 'raster-dem', tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 12, encoding: 'terrarium' },
     },
     layers: [
@@ -75,6 +77,7 @@ const map = new maplibregl.Map({
       { id: 'rivers', type: 'line', source: 'rivers', paint: { 'line-color': WATER, 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 1, 14, 5] } },
       { id: 'water', type: 'fill', source: 'water', paint: { 'fill-color': WATER } },
       { id: 'tideflats', type: 'fill', source: 'tideflats', paint: { 'fill-color': '#b9cfc6', 'fill-opacity': 0.9 } },
+      { id: 'harbor', type: 'fill', source: 'harbor', paint: { 'fill-color': WATER } },
       { id: 'shore', type: 'line', source: 'water', paint: { 'line-color': '#7fa9ba', 'line-width': 0.8, 'line-opacity': 0.7 } },
       { id: 'cities', type: 'line', source: 'cities', minzoom: 9, paint: { 'line-color': '#5d564d', 'line-width': 0.7, 'line-dasharray': [3, 3], 'line-opacity': 0 } },
     ],
@@ -304,7 +307,7 @@ function updateTiles() {
 }
 
 // ---------- static data ----------
-let roadsMajor = null, rail = null, dots = null, transit = null, parkLabels = [], seattleRings = null, scene = null, lost = null;
+let roadsMajor = null, rail = null, dots = null, transit = null, parkLabels = [], seattleRings = null, scene = null, lost = null, statics = null;
 const ROAD_STYLE = [ // class: colour, width m, min px
   { color: [122, 116, 108], w: 16, min: 1.4 }, { color: [150, 142, 130], w: 12, min: 1.1 }, { color: [244, 238, 222], w: 10, min: 0.8 },
   { color: [244, 238, 222], w: 8, min: 0.5 }, { color: [242, 236, 220], w: 7, min: 0.3 }, { color: [240, 233, 216], w: 6, min: 0 }];
@@ -424,8 +427,8 @@ function render() {
   if (transit) {
     const segs = [];
     for (const l of transit.lines) for (const s of l.segments) if (s.start <= year && year < s.end) segs.push({ path: s.path, color: hex(l.color), kind: l.kind });
-    layers.push(new PathLayer({ id: 'transit', data: segs, getPath: (d) => d.path, getColor: (d) => d.color, getWidth: (d) => (d.kind === 'sounder' ? 9 : 14), widthUnits: 'meters',
-      widthMinPixels: 2, capRounded: true, jointRounded: true, parameters: { depthCompare: 'always' } }));
+    layers.push(new PathLayer({ id: 'transit', data: segs, getPath: (d) => d.path, getColor: (d) => d.color, getWidth: (d) => (d.kind === 'sounder' ? 9 : d.kind === 'streetcar' ? 6 : 14), widthUnits: 'meters',
+      widthMinPixels: 1.5, capRounded: true, jointRounded: true, parameters: { depthCompare: 'always' } }));
   }
   if (zoom >= 12.4) for (const k of bTiles.wanted) {
     const t = bTiles.cache.get(k);
@@ -450,6 +453,9 @@ function render() {
       for (let j = 0; j < 3; j++) { const f = 0.5 + 0.5 * Math.sin(tSec * (6 + ((b.k + j) % 5)) + b.k + j * 2); flames.push({ p: [b.lon + (((b.k * 7 + j * 3) % 9) - 4) * 2e-5, b.lat + (((b.k * 5 + j * 4) % 9) - 4) * 1.4e-5, 4 + j * 5 + f * 5], r: 5 + f * 6 - j, c: [255, 120 + f * 110 - j * 20, 24, 215] }); }
       sc.smoke.push({ p: [b.lon, b.lat, 26 + ((tSec * 14 + b.k) % 60)], r: 12 + ((tSec * 4 + b.k) % 14), a: 110, dark: true });
     }
+    if (sc.roads.length) layers.push(new PathLayer({ id: 'route-roads', data: sc.roads, getPath: (d) => d, getWidth: 17, widthUnits: 'meters', widthMinPixels: 1.4, getColor: [122, 116, 108], parameters: { depthCompare: 'always' } }));
+    if (statics && zoom >= 11) layers.push(new SolidPolygonLayer({ id: 'statics', data: statics, getPolygon: (d) => d.p, getElevation: (d) => d.h, getFillColor: (d) => d.c, getFilterValue: (d) => d.f, extruded: true, material: MAT,
+      extensions: [filterExt2], filterRange: [[0, year], [year, 2e5]], filterSoftRange: [[0, year - 0.6], [year, 2e5]] }));
     if (sc.strips.length) layers.push(new PathLayer({ id: 'runways', data: sc.strips, getPath: (d) => d.path, getWidth: (d) => d.w, widthUnits: 'meters', widthMinPixels: 1.5, getColor: [128, 126, 122], parameters: { depthCompare: 'always' } }));
     if (sc.cars.length) layers.push(new ScatterplotLayer({ id: 'cars', data: sc.cars, getPosition: (d) => d.p, getRadius: 4.2, radiusMinPixels: 1.1, radiusMaxPixels: 4, getFillColor: (d) => d.c, parameters: { depthCompare: 'always' } }));
     layers.push(new SolidPolygonLayer({ id: 'scene', data: sc.prisms, getPolygon: (d) => d.p, getElevation: (d) => d.h, getFillColor: (d) => d.c, extruded: true, material: MAT }));
@@ -482,7 +488,8 @@ function setYear(y, fromSlider) {
   yearLabel.textContent = Math.floor(state.year);
   drawGrowth();
   if (map.getLayer('tideflats')) {
-    map.setPaintProperty('tideflats', 'fill-opacity', 0.9 * Math.max(0, Math.min(1, (1912 - state.year) / 17)));
+    map.setPaintProperty('tideflats', 'fill-opacity', 0.92 * Math.max(0, Math.min(1, (1913 - state.year) / 16)));
+    map.setPaintProperty('harbor', 'fill-opacity', Math.max(0, Math.min(1, (1909.9 - state.year) / 3)));
     map.setPaintProperty('parks', 'fill-opacity', 0.8 * Math.max(0, Math.min(1, (state.year - 1884) / 40)));
     map.setPaintProperty('cities', 'line-opacity', 0.5 * Math.max(0, Math.min(1, (state.year - 1890) / 30)));
   }
@@ -586,7 +593,7 @@ document.addEventListener('keydown', (e) => {
 // ---------- sources panel ----------
 $('sources').innerHTML = `<h3>About this map</h3>
 <p>Every building in King County, drawn in the year the county assessor says it was built.</p>
-<p><b>What is real and what is illustration.</b> Buildings that still stand are real footprints with recorded dates. The buildings that are gone — the wooden town before the 1889 fire, the early villages, Hooverville — are an <i>illustrative reconstruction</i>: plausible lots laid along today’s streets, appearing as the census population grew and disappearing when the fire, the regrades or the building that stands there now replaced them. They are not surveyed footprints. Roof shapes, colours, ships, trains and aircraft are period-typical models, not individual vessels, and they move far faster than life. A few landmarks (Yesler’s mill, the Territorial University, the Denny Hotel, the Kingdome, the Viaduct, the Space Needle) are placed by hand.</p>
+<p><b>What is real and what is illustration.</b> Buildings that still stand are real footprints with recorded dates. The buildings that are gone — the wooden town before the 1889 fire, the early villages, Hooverville — are an <i>illustrative reconstruction</i>: plausible lots laid along today’s streets, appearing as the census population grew and disappearing when the fire, the regrades or the building that stands there now replaced them. They are not surveyed footprints. Roof shapes, colours, ships, trains and aircraft are period-typical models, not individual vessels, and they move far faster than life. A few landmarks (Yesler’s mill, the Territorial University, the Denny Hotel, the Kingdome, the Viaduct, the Space Needle, the stadiums, the Spheres, the container cranes) are placed by hand. The twenty tallest towers and the Smith Tower use their real footprints, heights and completion years with stylised massing.</p>
 <p><b>Buildings:</b> footprints and heights from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps</a> (OpenStreetMap, Microsoft and others), joined to year-built records from the <a href="https://info.kingcounty.gov/assessor/DataDownload/default.aspx" target="_blank" rel="noopener">King County Department of Assessments</a> through county parcel polygons. The assessor records anything from 1900 or earlier as “1900”; those buildings are spread over 1888–1900 by distance from the old town centres, which is an estimate. About 4% of buildings have no record and take the year of their nearest dated neighbour.</p>
 <p><b>Streets</b> (OpenStreetMap via Overture) appear when the buildings along them do, which is also an estimate. Freeways use their opening years.</p>
 <p><b>Transit:</b> OpenStreetMap routes with Sound Transit and City of Seattle opening dates. <b>Terrain:</b> Mapzen/AWS terrain tiles. <b>Population:</b> U.S. Census; 2026 from the Washington Office of Financial Management.</p>
@@ -605,7 +612,7 @@ async function boot() {
     step(loadGrowth()),
     step(fetchBin('roads-major.bin.gz').then((b) => (roadsMajor = decodeRoads(b)))),
     step(fetchBin('rail.bin.gz').then((b) => (rail = decodeRoads(b)))),
-    step(fetchJSON('scene.json').then((d) => { scene = createScene(d); lost = buildLost(d.lost, [-122.334, 47.6017]); })),
+    step(fetchJSON('scene.json').then((d) => { scene = createScene(d); lost = buildLost(d.lost, [-122.334, 47.6017]); statics = buildStatic(d); })),
     step(fetchJSON('transit.json').then((t) => { transit = t; buildTrainPaths(); })),
     step(fetchJSON('park-labels.json').then((p) => (parkLabels = p.map((x) => ({ ...x, start: PARK_YEARS[x.name] ?? 1935 }))))),
     step(fetchJSON('cities.geojson').then((c) => {

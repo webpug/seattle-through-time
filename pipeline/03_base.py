@@ -154,7 +154,28 @@ def roads():
     rr = q(f"SELECT name, class, wkb FROM '{RAW}/ov_segments.parquet' WHERE subtype='rail' AND class='standard_gauge'")
     rg = shapely.from_wkb(np.array([bytes(v) for v in rr.wkb.values], dtype=object)); rgm = shapely.simplify(shapely.transform(rg, to_m), 2)
     k = shapely.length(rgm) > 150
-    open(os.path.join(OUT, 'rail.bin.gz'), 'wb').write(pack(np.full(int(k.sum()), 1893), np.zeros(int(k.sum())), shapely.transform(rgm[k], to_deg)))
+    rgm = rgm[k]
+    # Dates: the two surviving 19th-century main lines by name/route, everything else from the buildings beside it,
+    # and nothing on the tide flats or Harbor Island before they were filled.
+    sc = json.load(open(os.path.join(OUT, 'scene.json')))['routes']
+    main = {1884: shapely.LineString([(x * KX, y * KY) for x, y in sc['rail_south']]), 1893: shapely.LineString([(x * KX, y * KY) for x, y in sc['rail_north']])}
+    rmid = shapely.get_coordinates(shapely.line_interpolate_point(rgm, 0.5, normalized=True))
+    dr, nr = tree.query(rmid, k=8, distance_upper_bound=220, workers=-1)
+    yr_ = np.where(np.isfinite(dr), by[np.minimum(nr, len(by) - 1)], np.nan)
+    ry = np.nanquantile(np.where(np.isfinite(yr_).sum(axis=1, keepdims=True) >= 3, yr_, np.nan), 0.25, axis=1)
+    ry = np.where(np.isfinite(ry), ry, 1912)
+    ry = np.clip(ry, 1890, 1975)
+    TIDE = shapely.Polygon([(x * KX, y * KY) for x, y in [(-122.3372, 47.5990), (-122.3290, 47.5985), (-122.3215, 47.5935), (-122.3200, 47.5850), (-122.3215, 47.5760), (-122.3260, 47.5690),
+        (-122.3330, 47.5650), (-122.3420, 47.5640), (-122.3600, 47.5650), (-122.3640, 47.5720), (-122.3620, 47.5850), (-122.3530, 47.5905), (-122.3420, 47.5950)]])
+    HARBOR = shapely.box(-122.3600 * KX, 47.5640 * KY, -122.3425 * KX, 47.5920 * KY)
+    pts_mid = shapely.points(rmid)
+    ry = np.where(shapely.contains(TIDE, pts_mid), np.maximum(ry, 1904), ry)
+    ry = np.where(shapely.contains(HARBOR, pts_mid), np.maximum(ry, 1911), ry)
+    for y0, ln in main.items():
+        near = shapely.distance(pts_mid, ln) < 30
+        ry = np.where(near, y0, ry)
+    open(os.path.join(OUT, 'rail.bin.gz'), 'wb').write(pack(np.round(ry), np.zeros(len(rgm)), shapely.transform(rgm, to_deg)))
+    k = np.ones(len(rgm), dtype=bool)
     log('rail', int(k.sum()))
 
 if __name__ == '__main__':

@@ -70,8 +70,8 @@ export function buildLost(L, origin) {
 
 // ---------- prism helpers for models ----------
 // frame o: {lon, lat, c, s (cos/sin of heading), k (display scale), z}. Local x = starboard, y = forward, metres.
-function frame(lon, lat, heading, k = 1, z = 0) { const r = (heading * Math.PI) / 180; return { lon, lat, c: Math.cos(r), s: Math.sin(r), k, z, ikx: 1 / kx(lat) }; }
-function poly(out, o, pts, z, h, color) {
+export function frame(lon, lat, heading, k = 1, z = 0) { const r = (heading * Math.PI) / 180; return { lon, lat, c: Math.cos(r), s: Math.sin(r), k, z, ikx: 1 / kx(lat) }; }
+export function poly(out, o, pts, z, h, color) {
   const ring = new Array(pts.length);
   for (let i = 0; i < pts.length; i++) {
     const x = pts[i][0] * o.k, y = pts[i][1] * o.k;
@@ -79,8 +79,8 @@ function poly(out, o, pts, z, h, color) {
   }
   out.push({ p: ring, h: h * o.k, c: color });
 }
-const box = (out, o, x0, y0, x1, y1, z, h, c) => poly(out, o, [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], z, h, c);
-const ngon = (r, n = 10, cx = 0, cy = 0) => Array.from({ length: n }, (_, i) => [cx + r * Math.cos((i / n) * 6.2832), cy + r * Math.sin((i / n) * 6.2832)]);
+export const box = (out, o, x0, y0, x1, y1, z, h, c) => poly(out, o, [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], z, h, c);
+export const ngon = (r, n = 10, cx = 0, cy = 0) => Array.from({ length: n }, (_, i) => [cx + r * Math.cos((i / n) * 6.2832), cy + r * Math.sin((i / n) * 6.2832)]);
 const hull = (L, W, bow = 0.3, stern = 0.12) => [[0, L / 2], [W * 0.36, L / 2 - L * bow * 0.5], [W / 2, L / 2 - L * bow], [W / 2, -L / 2 + L * stern], [W * 0.3, -L / 2], [-W * 0.3, -L / 2], [-W / 2, -L / 2 + L * stern], [-W / 2, L / 2 - L * bow], [-W * 0.36, L / 2 - L * bow * 0.5]];
 const inset = (pts, f, g = f) => pts.map(([x, y]) => [x * f, y * g]);
 
@@ -308,7 +308,6 @@ const LANDMARKS = [
     const halo = year < 1968 ? [232, 150, 50] : year < 2000 ? [226, 196, 110] : C.white;
     lv.push([136, 141, 8], [141, 145, 13], [145, 149, 18, halo], [149, 152, 21, halo], [152, 155.5, 20.5], [155.5, 158.5, 17, [70, 80, 90]], [158.5, 161, 20, halo], [161, 164, 13], [164, 167, 7], [167, 184, 1.1, [210, 90, 60]]);
     stack(out, o, lv, 12, [240, 238, 230]);
-    box(out, o, -24, -24, 24, 24, 0, 5, [226, 222, 212]);
   } },
   { from: 1976.24, to: 2000.23, lon: -122.3316, lat: 47.5952, head: 0, draw(out, o) {
     const lv = [[0, 30, 101]];
@@ -336,11 +335,12 @@ export function createScene(data) {
   // prisms + smoke + traffic dots for the given moment
   function build(year, t, zoom, bounds) {
     const prisms = [], smoke = [], cars = [];
+    const roads = traffic.filter((r) => year >= r.from).map((r) => r.route.pts);
     const strips = RUNWAYS.filter((r) => year >= r[0]).map((r) => ({ path: [r[2], r[3]], w: r[1] }));
-    if (zoom < 10.3) return { prisms, smoke, cars, strips };
+    if (zoom < 10.3) return { prisms, smoke, cars, strips, roads };
     const w = bounds.getWest(), e = bounds.getEast(), s = bounds.getSouth(), n = bounds.getNorth(), padX = (e - w) * 0.15 + 0.01, padY = (n - s) * 0.15 + 0.01;
     const vis = (lon, lat) => lon > w - padX && lon < e + padX && lat > s - padY && lat < n + padY;
-    const kShip = Math.max(1.3, Math.min(5, 2 ** (15.1 - zoom))), kAir = Math.max(1.8, Math.min(9, 2 ** (15.6 - zoom))), kRail = Math.max(1.4, Math.min(6, 2 ** (15.7 - zoom)));
+    const kShip = Math.max(1, Math.min(2.3, 2 ** (14.4 - zoom))), kAir = Math.max(1.8, Math.min(9, 2 ** (15.6 - zoom))), kRail = Math.max(1.4, Math.min(6, 2 ** (15.7 - zoom)));
     const puff = (o, em, speedTrail, idSeed) => {
       if (!em) return;
       for (const [x, y, z, str] of em) for (let i = 0; i < 7; i++) {
@@ -397,7 +397,7 @@ export function createScene(data) {
         cars.push({ p: [p.lon + (Math.sin(rad) * off) / kx(p.lat), p.lat + (Math.cos(rad) * off) / KY], c: CAR[h % CAR.length] });
       }
     }
-    return { prisms, smoke, cars, strips };
+    return { prisms, smoke, cars, strips, roads };
   }
   return { build };
 }

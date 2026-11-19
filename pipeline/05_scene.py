@@ -257,8 +257,30 @@ for _ in range(480):
     for key, v in zip('x y w d a h s e t'.split(), (x / KX, y / KY, rng.uniform(2.6, 4.5), rng.uniform(3, 5.5), rng.uniform(0, 180), rng.uniform(2, 2.8),
                                                    1931.75 + rng.uniform(0, 3.5), 1941.3 + rng.uniform(0, 0.15), 4)): cols[key].append(v)
 
+# ---------------------------------------------------------------- container cranes
+# Seeds along each berth are snapped to the water's edge. Years: Pier 46 and Terminal 5 in 1964 (HistoryLink 10924), Terminal 18 in 1970.
+BERTHS = [(1964.07, -122.3418, 47.5905, 47.5962, 4), (1964.4, -122.3625, 47.5745, 47.5840, 4), (1970.0, -122.3447, 47.5735, 47.5865, 7), (1984.0, -122.3410, 47.5800, 47.5858, 3)]
+wb = shapely.boundary(shapely.union_all(water_m[wtree.query(shapely.box(-122.38 * KX, 47.55 * KY, -122.32 * KX, 47.61 * KY))]))
+cranes = []
+for y0, lon, la0, la1, n in BERTHS:
+    for la in np.linspace(la0, la1, n):
+        sd = shapely.Point(M(lon, la)); bp = shapely.line_interpolate_point(wb, shapely.line_locate_point(wb, sd))
+        d = sd.distance(bp)
+        if d > 160 or d < 0.5: print('  crane seed skipped', lon, la, round(d)); continue
+        ux, uy = (bp.x - sd.x) / d, (bp.y - sd.y) / d
+        if in_water(np.array([sd]))[0]: ux, uy = -ux, -uy   # unit vector pointing from land to water
+        cranes.append([round((bp.x - ux * 14) / KX, 6), round((bp.y - uy * 14) / KY, 6), round(math.degrees(math.atan2(ux, uy)), 1), y0])
+print('cranes', len(cranes))
+towers = []
+sys.path.insert(0, os.path.dirname(__file__))
+from landmarks import TOWERS
+fp = json.load(open(os.path.join(RAW, 'landmark_fp.json')))
+for lid, oname, yr, hgt in TOWERS:
+    if lid in fp: towers.append({'id': lid, 'year': yr, 'h': hgt, 'ring': fp[lid]})
+extra = {k: fp[k] for k in fp if k not in [t[0] for t in TOWERS]}
+
 R = {'x': 6, 'y': 6, 'w': 1, 'd': 1, 'a': 1, 'h': 1, 's': 2, 'e': 2, 't': 0}
 lost = {k: [round(float(v), R[k]) if R[k] else int(v) for v in vs] for k, vs in cols.items()}
-s = json.dumps({'lost': lost, 'routes': routes}, separators=(',', ':'))
+s = json.dumps({'lost': lost, 'routes': routes, 'cranes': cranes, 'towers': towers, 'footprints': extra}, separators=(',', ':'))
 open(os.path.join(OUT, 'scene.json'), 'w').write(s)
 print('lost buildings', len(lost['x']), 'scene.json', round(len(s) / 1e6, 2), 'MB')

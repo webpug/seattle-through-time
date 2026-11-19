@@ -1,7 +1,9 @@
 """Join Overture footprints to King County Assessor year-built via parcel polygons.
 Writes public/data/b/{x}_{y}.bin.gz (z13 tiles), public/data/b/index.json,
 public/data/growth.bin.gz (first-building-year raster) and raw/bldg_pts.npz."""
-import os, json, glob, gzip, math, struct, time
+import os, json, glob, gzip, math, struct, time, sys
+sys.path.insert(0, os.path.dirname(__file__))
+from landmarks import TOWERS, DROP_NAMES, DROP_NEAR
 import numpy as np, pandas as pd, shapely, duckdb
 from shapely import STRtree
 
@@ -27,6 +29,8 @@ al['yr'] = pd.to_numeric(al.YrBuilt, errors='coerce'); al['st'] = pd.to_numeric(
 al = al[(al.yr >= 1850) & (al.yr <= 2026)]
 g = al.groupby('pin').agg(yr=('yr', 'min'), st=('st', 'max'))
 pin_year = g.yr.to_dict(); pin_st = g.st.to_dict()
+# a parcel can hold an old low building and a new tower: the tower takes the year of the record with the most storeys
+pin_year_tall = al.sort_values('st', ascending=False).groupby('pin').yr.first().to_dict()
 log('assessor pins with year', len(pin_year))
 
 # ---------- 2. parcels ----------
@@ -42,6 +46,7 @@ pg = pg[ok]; pins = np.array(pins, dtype=object)[ok]
 pg = shapely.make_valid(pg)
 log('parcels', len(pg))
 p_year = np.array([pin_year.get(p, 0) for p in pins], dtype=np.int32)
+p_year_tall = np.array([pin_year_tall.get(p, 0) for p in pins], dtype=np.int32)
 p_st = np.array([pin_st.get(p, 0) or 0 for p in pins], dtype=np.float32)
 ptree = STRtree(pg)
 
@@ -50,17 +55,37 @@ con = duckdb.connect()
 df = con.execute(f"SELECT wkb, height, num_floors, name FROM '{RAW}/ov_buildings.parquet'").df()
 geom = shapely.from_wkb(np.array([bytes(v) for v in df.wkb.values], dtype=object))
 cen = shapely.centroid(geom)
+# landmarks that get hand-built models: export the footprint, drop it from the tiles
+nm_all = df.name.values; drop = np.zeros(len(geom), dtype=bool); fps = {}
+for lid, oname, _, _ in TOWERS:
+    ii = np.where(nm_all == oname)[0]
+    if not len(ii): print('!! landmark not found', oname); continue
+    i = ii[np.argmax(shapely.area(geom[ii]))]; drop[ii] = True
+    gg = geom[i]
+    if shapely.get_type_id(gg) == 6: gg = max(shapely.get_parts(gg), key=lambda q: q.area)
+    fps[lid] = [[round(x, 6), round(y, 6)] for x, y in shapely.get_coordinates(shapely.simplify(shapely.get_exterior_ring(gg), 4e-6))]
+for oname in DROP_NAMES:
+    ii = np.where(nm_all == oname)[0]; drop[ii] = True
+    if len(ii): fps[oname] = [[round(x, 6), round(y, 6)] for x, y in shapely.get_coordinates(shapely.get_exterior_ring(shapely.convex_hull(geom[ii[0]])))]
+gtree = STRtree(geom)
+for lid, lon, lat, r in DROP_NEAR:
+    circ = shapely.Polygon([(lon + r / 75200 * math.cos(t), lat + r / 110950 * math.sin(t)) for t in np.linspace(0, 6.2832, 40)])
+    ii = gtree.query(circ, predicate='intersects'); drop[ii] = True
+    print('drop near', lid, [(str(nm_all[i]), round(float(shapely.area(geom[i]) * 8.3e9))) for i in ii])
+json.dump(fps, open(os.path.join(RAW, 'landmark_fp.json'), 'w'))
 bi, pi = ptree.query(cen, predicate='within')
 first = np.full(len(geom), -1, dtype=np.int64)
 # keep the first parcel hit per building
 _, ui = np.unique(bi, return_index=True)
 first[bi[ui]] = pi[ui]
-keep = first >= 0
+keep = (first >= 0) & ~drop
 log('buildings', len(geom), 'in a KC parcel', int(keep.sum()))
 geom = geom[keep]; cen = cen[keep]; first = first[keep]
 h = df.height.values[keep].astype(np.float64); fl = df.num_floors.values[keep].astype(np.float64)
 names = df.name.values[keep]
 year = p_year[first].astype(np.int32); st = p_st[first]
+tall = (np.nan_to_num(h) > 25) | (np.nan_to_num(fl) > 7)
+year = np.where(tall & (p_year_tall[first] > 0), p_year_tall[first], year).astype(np.int32)
 
 # metres (local equirectangular)
 LAT0 = 47.5; KX = 111320 * math.cos(math.radians(LAT0)); KY = 110950
@@ -95,6 +120,10 @@ pre = np.where((year > 0) & (year < 1890))[0]
 infire = pre[shapely.contains(FIRE, shapely.points(cx[pre], cy[pre]))]
 year[infire] = 1890 + (jit[infire] % 3); est[infire] = True
 log('fire-district estimates moved to 1890-92', len(infire))
+# Harbor Island was finished in 1909; earlier dates there are estimates gone wrong
+hi = (cx > -122.3600) & (cx < -122.3425) & (cy > 47.5640) & (cy < 47.5920) & (year > 0) & (year < 1910)
+year[hi] = 1910 + (jit[hi] * 2); est[hi] = True
+log('Harbor Island dates moved to 1910+', int(hi.sum()))
 sel = big & (year > 0)
 log('kept', int(sel.sum()))
 
@@ -104,6 +133,9 @@ hh = np.where(np.isnan(hh) & np.isfinite(fl) & (fl > 0), fl * 3.3 + 1, hh)
 hh = np.where(np.isnan(hh) & (st > 0), st * 3.2 + 1.5, hh)
 hh = np.where(np.isnan(hh), np.where(area > 1500, 8, np.where(area < 60, 3, 5.5)), hh)
 hh = np.clip(hh, 2.5, 300)
+# nothing but the Smith Tower stood over 100 m before 1962: such heights are bad data
+hh = np.where((year < 1962) & (hh > 100), 60, hh)
+hh = np.where((year < 1904) & (hh > 40), 30, hh)
 
 gm = gm[sel]; year = year[sel]; hh = hh[sel]; cx = cx[sel]; cy = cy[sel]; est = est[sel]; names = names[sel]; area = area[sel]
 # largest polygon part, outer ring, simplified
