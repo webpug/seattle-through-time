@@ -2,6 +2,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import '@fontsource/cormorant-garamond/500.css';
 import '@fontsource/cormorant-garamond/600.css';
+import '@fontsource/cormorant-garamond/700.css';
 import '@fontsource/cormorant-garamond/500-italic.css';
 import './style.css';
 import { MapboxOverlay } from '@deck.gl/mapbox';
@@ -9,12 +10,14 @@ import { COORDINATE_SYSTEM, LightingEffect, AmbientLight, DirectionalLight } fro
 import { SolidPolygonLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers';
 import { DataFilterExtension } from '@deck.gl/extensions';
 import { POP, PLACES, EVENTS, STORY, PARK_YEARS } from './content.js';
+import { createScene, buildLost, hipRoof, kx, KY } from './scene.js';
 
 const Y0 = 1851, Y1 = 2026.99;
 const $ = (id) => document.getElementById(id);
 const DATA = `${import.meta.env.BASE_URL}data/`;
 const state = { year: Y0, playing: false, speed: 6 };
 const filterExt = new DataFilterExtension({ filterSize: 1 });
+const filterExt2 = new DataFilterExtension({ filterSize: 2 });
 
 // ---------- loading helpers ----------
 async function fetchBin(path) {
@@ -159,6 +162,14 @@ function colourFor(year, h, seed) {
   const p = h > 55 ? (year >= 1960 ? PALETTES.glass : PALETTES.mid) : year < 1915 ? PALETTES.old : year < 1946 ? PALETTES.mid : year < 1985 ? PALETTES.post : PALETTES.new;
   return p[seed % p.length];
 }
+// houses: painted wood walls and a shingled hip roof, by era
+const HOUSE = [
+  [1915, [[236, 230, 214], [222, 212, 188], [200, 204, 190], [226, 212, 176], [190, 176, 156], [208, 190, 172], [178, 190, 196]], [[104, 92, 80], [92, 88, 82], [112, 100, 90]]],
+  [1946, [[232, 226, 208], [214, 200, 172], [196, 180, 152], [220, 222, 212], [184, 150, 124], [206, 212, 196]], [[110, 98, 88], [96, 104, 96], [128, 92, 80], [100, 96, 92]]],
+  [1978, [[234, 228, 212], [218, 222, 214], [226, 208, 180], [200, 208, 212], [214, 196, 176], [190, 200, 184]], [[142, 138, 132], [120, 114, 108], [150, 126, 108], [112, 112, 114]]],
+  [9999, [[222, 218, 208], [198, 204, 206], [214, 202, 184], [180, 188, 192], [226, 222, 214], [170, 160, 150]], [[104, 102, 102], [88, 90, 94], [124, 118, 112]]],
+];
+const SKIP = [[-122.3493, 47.6205, 150]]; // drawn as hand-built landmarks instead: [lon, lat, min height]
 function decodeBuildings(buf) {
   const dv = new DataView(buf);
   const n = dv.getUint32(0, true), nv = dv.getUint32(4, true);
@@ -169,19 +180,48 @@ function decodeBuildings(buf) {
   const cnt = new Uint16Array(buf.slice(o, o + n * 2)); o += n * 2;
   const xy = new Int16Array(buf.slice(o, o + nv * 4));
   const pos = new Float32Array(nv * 2), elev = new Float32Array(nv), col = new Uint8Array(nv * 4), fv = new Float32Array(nv), start = new Uint32Array(n + 1);
+  const mx = qx * kx(oy), my = qy * KY, sx = 1 / kx(oy), sy = 1 / KY;
+  const rp = [], rc = [], rf = [], rs = [0];
   let v = 0;
   for (let i = 0; i < n; i++) {
     start[i] = v;
-    const h = Math.min(hts[i] / 10, 290), yr = years[i];
-    const c = colourFor(yr, h, (xy[v * 2] * 31 + xy[v * 2 + 1] * 17 + i) >>> 0);
-    for (let k = 0; k < cnt[i]; k++, v++) {
+    let h = Math.min(hts[i] / 10, 290), yr = years[i];
+    const m = cnt[i], seed = (xy[v * 2] * 31 + xy[v * 2 + 1] * 17 + i) >>> 0;
+    let c = colourFor(yr, h, seed);
+    if (h > 100) for (const sk of SKIP) if (h >= sk[2] && Math.abs(ox + xy[v * 2] * qx - sk[0]) < 0.0008 && Math.abs(oy + xy[v * 2 + 1] * qy - sk[1]) < 0.0006) yr = 9999;
+    if (h <= 12.5 && m >= 4 && m <= 14) {
+      // oriented bounding box along the longest wall
+      let best = 0, ux = 1, uy = 0, area = 0;
+      for (let k = 0; k < m - 1; k++) {
+        const x0 = xy[(v + k) * 2] * mx, y0 = xy[(v + k) * 2 + 1] * my, x1 = xy[(v + k + 1) * 2] * mx, y1 = xy[(v + k + 1) * 2 + 1] * my;
+        const dx = x1 - x0, dy = y1 - y0, l = dx * dx + dy * dy; area += x0 * y1 - x1 * y0;
+        if (l > best) { best = l; ux = dx; uy = dy; }
+      }
+      const l = Math.sqrt(best) || 1; ux /= l; uy /= l;
+      let u0 = 1e9, u1 = -1e9, v0 = 1e9, v1 = -1e9;
+      for (let k = 0; k < m - 1; k++) {
+        const x = xy[(v + k) * 2] * mx, y = xy[(v + k) * 2 + 1] * my, pu = x * ux + y * uy, pv = -x * uy + y * ux;
+        if (pu < u0) u0 = pu; if (pu > u1) u1 = pu; if (pv < v0) v0 = pv; if (pv > v1) v1 = pv;
+      }
+      let a = (u1 - u0) / 2, b = (v1 - v0) / 2; const cu = (u0 + u1) / 2, cv = (v0 + v1) / 2;
+      const cx = cu * ux - cv * uy, cy = cu * uy + cv * ux, box = 4 * a * b;
+      if (box <= 560 && box > 14 && Math.abs(area) / 2 / box >= 0.7) {
+        if (b > a) { const t = a; a = b; b = t; const tx = ux; ux = -uy; uy = tx; }
+        const era = HOUSE.find((e) => yr < e[0]), rh = Math.min(b * 0.62, 3.3), eave = Math.max(2.2, h - rh);
+        c = era[1][seed % era[1].length]; h = eave;
+        hipRoof(rp, rc, rs, () => rf.push(yr), cx, cy, ux, uy, a + 0.3, b + 0.3, eave, rh, era[2][(seed >>> 3) % era[2].length], sx, sy);
+      }
+    }
+    for (let k = 0; k < m; k++, v++) {
       pos[v * 2] = xy[v * 2] * qx; pos[v * 2 + 1] = xy[v * 2 + 1] * qy;
       elev[v] = h; fv[v] = yr; col[v * 4] = c[0]; col[v * 4 + 1] = c[1]; col[v * 4 + 2] = c[2]; col[v * 4 + 3] = 255;
     }
   }
   start[n] = v;
   return { origin: [ox, oy, 0], data: { length: n, startIndices: start, attributes: {
-    getPolygon: { value: pos, size: 2 }, getElevation: { value: elev, size: 1 }, getFillColor: { value: col, size: 4, normalized: true }, getFilterValue: { value: fv, size: 1 } } } };
+    getPolygon: { value: pos, size: 2 }, getElevation: { value: elev, size: 1 }, getFillColor: { value: col, size: 4, normalized: true }, getFilterValue: { value: fv, size: 1 } } },
+    roofs: rs.length > 1 ? { length: rs.length - 1, startIndices: new Uint32Array(rs), attributes: {
+      getPolygon: { value: new Float32Array(rp), size: 3 }, getFillColor: { value: new Uint8Array(rc), size: 4, normalized: true }, getFilterValue: { value: new Float32Array(rf), size: 1 } } } : null };
 }
 // roads: returns one binary dataset per class present
 function decodeRoads(buf) {
@@ -264,7 +304,7 @@ function updateTiles() {
 }
 
 // ---------- static data ----------
-let roadsMajor = null, rail = null, dots = null, transit = null, parkLabels = [], seattleRings = null;
+let roadsMajor = null, rail = null, dots = null, transit = null, parkLabels = [], seattleRings = null, scene = null, lost = null;
 const ROAD_STYLE = [ // class: colour, width m, min px
   { color: [122, 116, 108], w: 16, min: 1.4 }, { color: [150, 142, 130], w: 12, min: 1.1 }, { color: [244, 238, 222], w: 10, min: 0.8 },
   { color: [244, 238, 222], w: 8, min: 0.5 }, { color: [242, 236, 220], w: 7, min: 0.3 }, { color: [240, 233, 216], w: 6, min: 0 }];
@@ -343,25 +383,24 @@ const hex = (h, a = 255) => [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4)
 let effect = null; // {kind:'fire', lon, lat, t0}
 let marker = null;
 const OFFS = COORDINATE_SYSTEM.LNGLAT_OFFSETS;
+const MAT = { ambient: 0.42, diffuse: 0.62, shininess: 8, specularColor: [40, 40, 40] };
 function labelLayers(zoom, year) {
   const vis = PLACES.filter((p) => p.start <= year && year < p.end && (
     p.tier === 1 || (p.tier === 2 && zoom >= 9.3) || (p.tier === 3 && zoom >= 11.7) || (p.tier === 4 && zoom >= 9) || (p.tier === 5 && zoom >= 10.6)));
-  const common = { fontFamily: 'Cormorant Garamond', fontSettings: { sdf: true, fontSize: 64, buffer: 10, radius: 14, cutoff: 0.18 }, outlineWidth: 5, outlineColor: [255, 252, 244, 235],
+  // white lettering with a dark outline reads on forest, water and rooftops alike
+  const common = { fontFamily: 'Cormorant Garamond', fontWeight: 700, fontSettings: { sdf: true, fontSize: 72, buffer: 12, radius: 16, cutoff: 0.2 }, outlineWidth: 6, outlineColor: [38, 30, 24, 255],
     getPosition: (d) => [d.lon, d.lat, d.z || 0], getText: (d) => d.name, parameters: { depthCompare: 'always' }, billboard: true, characterSet: 'auto' };
-  const upright = vis.filter((p) => p.tier <= 3), ital = vis.filter((p) => p.tier >= 4);
+  const SIZE = [0, 30, 21, 15.5, 19, 18], COLOR = [0, [255, 255, 250, 255], [255, 253, 244, 255], [250, 246, 234, 255], [214, 236, 250, 255], [255, 232, 176, 255]];
   const out = [
-    new TextLayer({ ...common, id: 'labels', data: upright, fontWeight: 600,
-      getSize: (d) => (d.tier === 1 ? 25 : d.tier === 2 ? 18 : 14), getColor: (d) => (d.tier === 3 ? [70, 62, 54, 255] : [36, 32, 28, 255]),
+    new TextLayer({ ...common, id: 'labels', data: vis, getSize: (d) => SIZE[d.tier], getColor: (d) => COLOR[d.tier],
       getText: (d) => (d.tier === 3 ? d.name.toUpperCase() : d.name), updateTriggers: { getText: 1 } }),
-    new TextLayer({ ...common, id: 'labels-italic', data: ital, fontWeight: 'italic 500',
-      getSize: (d) => (d.tier === 4 ? 17 : 16), getColor: (d) => (d.tier === 4 ? [52, 92, 112, 255] : [96, 66, 44, 255]) }),
   ];
   if (zoom >= 12.8) {
     const minHa = zoom >= 14.6 ? 2 : zoom >= 13.6 ? 12 : 40;
-    out.push(new TextLayer({ ...common, id: 'labels-parks', data: parkLabels.filter((p) => p.ha >= minHa && p.start <= year), fontWeight: 'italic 500', getSize: 14, getColor: [58, 98, 52, 255] }));
+    out.push(new TextLayer({ ...common, id: 'labels-parks', data: parkLabels.filter((p) => p.ha >= minHa && p.start <= year), getSize: 15, getColor: [216, 244, 200, 255] }));
   }
   if (transit && zoom >= 13.4) {
-    out.push(new TextLayer({ ...common, id: 'labels-stations', data: transit.stations.filter((s) => s.start <= year), fontWeight: 600, getSize: 13, getColor: [40, 60, 90, 255], getPixelOffset: [0, -14] }));
+    out.push(new TextLayer({ ...common, id: 'labels-stations', data: transit.stations.filter((s) => s.start <= year), getSize: 14, getColor: [255, 255, 255, 255], getPixelOffset: [0, -15] }));
   }
   return out;
 }
@@ -391,7 +430,32 @@ function render() {
   if (zoom >= 12.4) for (const k of bTiles.wanted) {
     const t = bTiles.cache.get(k);
     if (t) layers.push(new SolidPolygonLayer({ id: `b-${k}`, data: t.data, coordinateSystem: OFFS, coordinateOrigin: t.origin, positionFormat: 'XY', extruded: true, _normalize: false, _windingOrder: 'CW',
-      material: { ambient: 0.42, diffuse: 0.62, shininess: 8, specularColor: [40, 40, 40] }, extensions: [filterExt], filterRange: range, filterSoftRange: soft }));
+      material: MAT, extensions: [filterExt], filterRange: range, filterSoftRange: soft }));
+    if (t?.roofs) layers.push(new SolidPolygonLayer({ id: `r-${k}`, data: t.roofs, coordinateSystem: OFFS, coordinateOrigin: t.origin, positionFormat: 'XYZ', extruded: false, _normalize: false,
+      material: false, extensions: [filterExt], filterRange: range, filterSoftRange: soft }));
+  }
+  if (lost && zoom >= 11.6) {
+    const r2 = [[0, year], [year, 1e5]], s2 = [[0, year - 0.5], [year + 0.12, 1e5]];
+    layers.push(new SolidPolygonLayer({ id: 'lost', data: lost.walls, coordinateSystem: OFFS, coordinateOrigin: lost.origin, positionFormat: 'XY', extruded: true, _normalize: false, _windingOrder: 'CCW',
+      material: MAT, extensions: [filterExt2], filterRange: r2, filterSoftRange: s2 }));
+    layers.push(new SolidPolygonLayer({ id: 'lost-roofs', data: lost.roofs, coordinateSystem: OFFS, coordinateOrigin: lost.origin, positionFormat: 'XYZ', extruded: false, _normalize: false,
+      material: false, extensions: [filterExt2], filterRange: r2, filterSoftRange: s2 }));
+  }
+  if (scene) {
+    const tSec = performance.now() / 1000, sc = scene.build(year, tSec, zoom, map.getBounds());
+    // fires: the 1889 fire front and the burning of Hooverville follow the buildings as they go
+    const flames = [];
+    if (lost && ((year > 1889.4 && year < 1889.95) || (year > 1941.25 && year < 1941.5))) for (const b of lost.burning) {
+      const dt = b.e - year; if (dt < -0.03 || dt > 0.06) continue;
+      for (let j = 0; j < 3; j++) { const f = 0.5 + 0.5 * Math.sin(tSec * (6 + ((b.k + j) % 5)) + b.k + j * 2); flames.push({ p: [b.lon + (((b.k * 7 + j * 3) % 9) - 4) * 2e-5, b.lat + (((b.k * 5 + j * 4) % 9) - 4) * 1.4e-5, 4 + j * 5 + f * 5], r: 5 + f * 6 - j, c: [255, 120 + f * 110 - j * 20, 24, 215] }); }
+      sc.smoke.push({ p: [b.lon, b.lat, 26 + ((tSec * 14 + b.k) % 60)], r: 12 + ((tSec * 4 + b.k) % 14), a: 110, dark: true });
+    }
+    if (sc.strips.length) layers.push(new PathLayer({ id: 'runways', data: sc.strips, getPath: (d) => d.path, getWidth: (d) => d.w, widthUnits: 'meters', widthMinPixels: 1.5, getColor: [128, 126, 122], parameters: { depthCompare: 'always' } }));
+    if (sc.cars.length) layers.push(new ScatterplotLayer({ id: 'cars', data: sc.cars, getPosition: (d) => d.p, getRadius: 4.2, radiusMinPixels: 1.1, radiusMaxPixels: 4, getFillColor: (d) => d.c, parameters: { depthCompare: 'always' } }));
+    layers.push(new SolidPolygonLayer({ id: 'scene', data: sc.prisms, getPolygon: (d) => d.p, getElevation: (d) => d.h, getFillColor: (d) => d.c, extruded: true, material: MAT }));
+    if (sc.smoke.length) layers.push(new ScatterplotLayer({ id: 'smoke', data: sc.smoke, getPosition: (d) => d.p, getRadius: (d) => d.r, billboard: true,
+      getFillColor: (d) => (d.dark ? [70, 62, 58, d.a] : [236, 232, 226, d.a]), parameters: { depthWriteEnabled: false } }));
+    if (flames.length) layers.push(new ScatterplotLayer({ id: 'flames', data: flames, getPosition: (d) => d.p, getRadius: (d) => d.r, getFillColor: (d) => d.c, billboard: true, parameters: { depthWriteEnabled: false } }));
   }
   if (transit && zoom >= 10.8) {
     layers.push(new ScatterplotLayer({ id: 'stations', data: transit.stations.filter((s) => s.start <= year && zoom >= 12), getPosition: (d) => [d.lon, d.lat], getRadius: 13, radiusMinPixels: 2.2, radiusMaxPixels: 7,
@@ -437,7 +501,7 @@ function frame(t) {
     const dt = Math.min(0.1, (t - lastT) / 1000); lastT = t;
     setYear(state.year + dt * state.speed);
     if (state.year >= Y1) setPlaying(false);
-  } else if (story.tick(t)) { /* story drives the year */ } else if ((transit && map.getZoom() >= 10.8 && state.year >= 1962.2) || effect) render();
+  } else if (story.tick(t)) { /* story drives the year */ } else if (scene && map.getZoom() >= 10.3) render();
   requestAnimationFrame(frame);
 }
 
@@ -498,7 +562,7 @@ const story = (() => {
     },
     tick(t) {
       if (phase === 'off') return false;
-      if (paused) { if (effect) render(); return true; }
+      if (paused) { render(); return true; }
       const s = STORY[idx], f = Math.min(1, (t - t0) / dur);
       if (phase === 'fly') { setYear(yFrom + (s.year + 0.05 - yFrom) * ease(f)); if (f >= 1) dwell(); }
       else { setYear(Math.min(Y1, s.year + 0.05 + f * 1.2)); if (f >= 1) api.next(); }
@@ -521,7 +585,8 @@ document.addEventListener('keydown', (e) => {
 
 // ---------- sources panel ----------
 $('sources').innerHTML = `<h3>About this map</h3>
-<p>Every building in King County, drawn in the year the county assessor says it was built. Only buildings that still stand are shown: what was demolished along the way is missing, so the past looks emptier than it was.</p>
+<p>Every building in King County, drawn in the year the county assessor says it was built.</p>
+<p><b>What is real and what is illustration.</b> Buildings that still stand are real footprints with recorded dates. The buildings that are gone — the wooden town before the 1889 fire, the early villages, Hooverville — are an <i>illustrative reconstruction</i>: plausible lots laid along today’s streets, appearing as the census population grew and disappearing when the fire, the regrades or the building that stands there now replaced them. They are not surveyed footprints. Roof shapes, colours, ships, trains and aircraft are period-typical models, not individual vessels, and they move far faster than life. A few landmarks (Yesler’s mill, the Territorial University, the Denny Hotel, the Kingdome, the Viaduct, the Space Needle) are placed by hand.</p>
 <p><b>Buildings:</b> footprints and heights from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps</a> (OpenStreetMap, Microsoft and others), joined to year-built records from the <a href="https://info.kingcounty.gov/assessor/DataDownload/default.aspx" target="_blank" rel="noopener">King County Department of Assessments</a> through county parcel polygons. The assessor records anything from 1900 or earlier as “1900”; those buildings are spread over 1888–1900 by distance from the old town centres, which is an estimate. About 4% of buildings have no record and take the year of their nearest dated neighbour.</p>
 <p><b>Streets</b> (OpenStreetMap via Overture) appear when the buildings along them do, which is also an estimate. Freeways use their opening years.</p>
 <p><b>Transit:</b> OpenStreetMap routes with Sound Transit and City of Seattle opening dates. <b>Terrain:</b> Mapzen/AWS terrain tiles. <b>Population:</b> U.S. Census; 2026 from the Washington Office of Financial Management.</p>
@@ -532,14 +597,15 @@ $('sources-btn').addEventListener('click', () => ($('sources').hidden = !$('sour
 // ---------- boot ----------
 async function boot() {
   const loading = $('loading');
-  let done = 0; const total = 8;
+  let done = 0; const total = 9;
   const step = (p) => p.then((v) => { loading.textContent = `Loading Seattle… ${Math.round((++done / total) * 100)}%`; return v; });
-  await Promise.all([document.fonts.load('600 20px "Cormorant Garamond"'), document.fonts.load('italic 500 20px "Cormorant Garamond"'), new Promise((r) => map.once('load', r))]);
+  await Promise.all([document.fonts.load('700 20px "Cormorant Garamond"'), document.fonts.load('600 20px "Cormorant Garamond"'), document.fonts.load('italic 500 20px "Cormorant Garamond"'), new Promise((r) => map.once('load', r))]);
   map.addControl(overlay);
   const [bi, si] = await Promise.all([step(fetchJSON('b/index.json')), step(fetchJSON('s/index.json')),
     step(loadGrowth()),
     step(fetchBin('roads-major.bin.gz').then((b) => (roadsMajor = decodeRoads(b)))),
     step(fetchBin('rail.bin.gz').then((b) => (rail = decodeRoads(b)))),
+    step(fetchJSON('scene.json').then((d) => { scene = createScene(d); lost = buildLost(d.lost, [-122.334, 47.6017]); })),
     step(fetchJSON('transit.json').then((t) => { transit = t; buildTrainPaths(); })),
     step(fetchJSON('park-labels.json').then((p) => (parkLabels = p.map((x) => ({ ...x, start: PARK_YEARS[x.name] ?? 1935 }))))),
     step(fetchJSON('cities.geojson').then((c) => {

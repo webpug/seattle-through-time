@@ -30,6 +30,7 @@ uv venv .venv && VIRTUAL_ENV=.venv uv pip install duckdb shapely numpy scipy pan
 .venv/bin/python pipeline/02_buildings.py           # footprints x year built -> public/data/b/
 .venv/bin/python pipeline/03_base.py                # water, parks, forest, cities, dated roads
 .venv/bin/python pipeline/04_transit.py             # transit lines + low-zoom building dots
+.venv/bin/python pipeline/05_scene.py               # lost-building reconstruction + ship/rail/freeway routes
 ```
 
 `04_transit.py` reads two Overpass API responses (`raw/transit_osm.json`, `raw/transit_nodes.json`); the queries are in `pipeline/overpass.txt`.
@@ -53,3 +54,12 @@ uv venv .venv && VIRTUAL_ENV=.venv uv pip install duckdb shapely numpy scipy pan
 - History text in `src/content.js` is hand-written; each entry links to a source.
 
 Data © OpenStreetMap contributors (ODbL), Overture Maps Foundation (CDLA-Permissive 2.0 / ODbL), King County.
+
+## What is real and what is illustration
+
+Surviving buildings are real footprints with assessor dates. Everything else in the animated layer (`src/scene.js`, `public/data/scene.json`) is illustrative:
+
+- **Lost buildings** (the pre-1889 wooden town, early villages, Hooverville) are plausible lots laid along today's streets by `05_scene.py`. They appear as census population grows and vanish in the 1889 fire, the regrades, or when the building standing there today was built. They are not surveyed footprints.
+- **Hip roofs and colours** on small buildings are generated from each footprint's bounding box and era.
+- **Ships, trains, aircraft and traffic** are period-typical models on fixed routes, sped up and enlarged when zoomed out.
+- **Landmarks** (Yesler's mill, Territorial University, Denny Hotel, Kingdome, Viaduct, Space Needle, Great Wheel, runways) are hand-placed.

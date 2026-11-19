@@ -88,6 +88,13 @@ jit = ((np.abs(cx * 1e6).astype(np.int64) * 7919 + np.abs(cy * 1e6).astype(np.in
 spread = np.clip(np.round(1888 + np.minimum(dkm, 4) * 2.5 + jit), 1888, 1900).astype(np.int32)
 year = np.where(is1900, spread, year); est |= is1900
 log('1900-stamped', int(is1900.sum()))
+# Nothing in the 1889 fire district survived the fire: push those estimates to the rebuild (1890-92).
+FIRE = shapely.Polygon([(-122.3415, 47.6068), (-122.3385, 47.6078), (-122.3350, 47.6050), (-122.3305, 47.6025), (-122.3290, 47.6017),
+                        (-122.3290, 47.5983), (-122.3345, 47.5983), (-122.3368, 47.6015), (-122.3392, 47.6045)])
+pre = np.where((year > 0) & (year < 1890))[0]
+infire = pre[shapely.contains(FIRE, shapely.points(cx[pre], cy[pre]))]
+year[infire] = 1890 + (jit[infire] % 3); est[infire] = True
+log('fire-district estimates moved to 1890-92', len(infire))
 sel = big & (year > 0)
 log('kept', int(sel.sum()))
 
