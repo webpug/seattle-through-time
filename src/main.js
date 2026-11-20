@@ -12,6 +12,7 @@ import { DataFilterExtension } from '@deck.gl/extensions';
 import { POP, PLACES, EVENTS, STORY, PARK_YEARS } from './content.js';
 import { createScene, buildLost, hipRoof, kx, KY } from './scene.js';
 import { buildStatic } from './landmarks.js';
+import { createBackdrop, STAGE } from './backdrop.js';
 
 const Y0 = 1851, Y1 = 2026.99;
 const $ = (id) => document.getElementById(id);
@@ -59,15 +60,16 @@ const map = new maplibregl.Map({
   container: 'map',
   style: {
     version: 8,
+    sky: { 'sky-color': '#7fb0dc', 'horizon-color': '#eef2f6', 'fog-color': '#eef2f6', 'sky-horizon-blend': 0.7, 'horizon-fog-blend': 0.8, 'fog-ground-blend': 0.75, 'atmosphere-blend': 0 },
     sources: {
       forest: { type: 'geojson', data: DATA + 'forest.geojson' },
       parks: { type: 'geojson', data: DATA + 'parks.geojson' },
       water: { type: 'geojson', data: DATA + 'water.geojson' },
       rivers: { type: 'geojson', data: DATA + 'rivers.geojson' },
       cities: { type: 'geojson', data: DATA + 'cities.geojson' },
-      tideflats: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
-      harbor: { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[-122.36, 47.564], [-122.3425, 47.564], [-122.3425, 47.592], [-122.36, 47.592], [-122.36, 47.564]]] } } },
-      dem: { type: 'raster-dem', tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 12, encoding: 'terrarium' },
+      shore: { type: 'geojson', data: DATA + 'shore.geojson' },
+      outside: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+      dem: { type: 'raster-dem', bounds: STAGE, tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 12, encoding: 'terrarium' },
     },
     layers: [
       { id: 'land', type: 'background', paint: { 'background-color': '#8aa56f' } },
@@ -76,9 +78,12 @@ const map = new maplibregl.Map({
       { id: 'hillshade', type: 'hillshade', source: 'dem', paint: { 'hillshade-exaggeration': 0.55, 'hillshade-shadow-color': '#3d4a36', 'hillshade-highlight-color': '#fff8e0', 'hillshade-accent-color': '#5d6b4c' } },
       { id: 'rivers', type: 'line', source: 'rivers', paint: { 'line-color': WATER, 'line-width': ['interpolate', ['linear'], ['zoom'], 9, 1, 14, 5] } },
       { id: 'water', type: 'fill', source: 'water', paint: { 'fill-color': WATER } },
-      { id: 'tideflats', type: 'fill', source: 'tideflats', paint: { 'fill-color': '#b9cfc6', 'fill-opacity': 0.9 } },
-      { id: 'harbor', type: 'fill', source: 'harbor', paint: { 'fill-color': WATER } },
       { id: 'shore', type: 'line', source: 'water', paint: { 'line-color': '#7fa9ba', 'line-width': 0.8, 'line-opacity': 0.7 } },
+      // the shore as it was: water since filled in, and land since dredged away (see pipeline/06_shoreline.py)
+      { id: 'was-land', type: 'fill', source: 'shore', filter: ['==', ['get', 'k'], 'l'], paint: { 'fill-color': '#8aa56f', 'fill-antialias': false } },
+      { id: 'was-water', type: 'fill', source: 'shore', filter: ['==', ['get', 'k'], 'w'], paint: { 'fill-color': WATER, 'fill-antialias': false } },
+      { id: 'flats', type: 'fill', source: 'shore', filter: ['==', ['get', 'k'], 'f'], paint: { 'fill-color': '#d3dcc0', 'fill-antialias': false } },
+      { id: 'outside', type: 'fill', source: 'outside', paint: { 'fill-color': '#eef2f6', 'fill-antialias': false } },
       { id: 'cities', type: 'line', source: 'cities', minzoom: 9, paint: { 'line-color': '#5d564d', 'line-width': 0.7, 'line-dasharray': [3, 3], 'line-opacity': 0 } },
     ],
   },
@@ -86,7 +91,7 @@ const map = new maplibregl.Map({
   zoom: init.zoom ?? 12.6,
   pitch: init.pitch ?? 55,
   bearing: init.bearing ?? -18,
-  maxPitch: 78, minZoom: 8.2, maxZoom: 18.5,
+  maxPitch: 80, minZoom: 8.5, maxZoom: 18.5,
   maxBounds: [[-123.6, 46.6], [-120.4, 48.3]],
   attributionControl: false,
   canvasContextAttributes: { antialias: true },
@@ -94,10 +99,17 @@ const map = new maplibregl.Map({
 map.dragRotate.enable();
 map.touchZoomRotate.enableRotation();
 
-// Elliott Bay's tide flats, filled 1895-1917 (approximate outline of the fill south of King Street).
-const TIDEFLATS = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[
-  [-122.3372, 47.5990], [-122.3290, 47.5985], [-122.3215, 47.5935], [-122.3200, 47.5850], [-122.3215, 47.5760], [-122.3260, 47.5690],
-  [-122.3330, 47.5650], [-122.3420, 47.5640], [-122.3600, 47.5650], [-122.3640, 47.5720], [-122.3620, 47.5850], [-122.3530, 47.5905], [-122.3420, 47.5950], [-122.3372, 47.5990]]] } };
+// each shoreline patch fades out over the years its fill (or cut) took
+let shoreStep = -1;
+function drawShore() {
+  const y = Math.round(state.year * 8) / 8;
+  if (y === shoreStep || !map.getLayer('was-water')) return;
+  shoreStep = y;
+  const op = ['max', 0, ['min', 1, ['/', ['-', ['get', 'b'], y], ['-', ['get', 'b'], ['get', 'a']]]]];
+  map.setPaintProperty('was-water', 'fill-opacity', op);
+  map.setPaintProperty('was-land', 'fill-opacity', op);
+  map.setPaintProperty('flats', 'fill-opacity', ['*', 0.3, op]);
+}
 
 // ---------- growth raster: cleared / built-up land by year, on a canvas source ----------
 let growth = null;
@@ -307,7 +319,7 @@ function updateTiles() {
 }
 
 // ---------- static data ----------
-let roadsMajor = null, rail = null, dots = null, transit = null, parkLabels = [], seattleRings = null, scene = null, lost = null, statics = null;
+let roadsMajor = null, rail = null, dots = null, transit = null, parkLabels = [], seattleRings = null, scene = null, lost = null, statics = null, backdrop = null;
 const ROAD_STYLE = [ // class: colour, width m, min px
   { color: [122, 116, 108], w: 16, min: 1.4 }, { color: [150, 142, 130], w: 12, min: 1.1 }, { color: [244, 238, 222], w: 10, min: 0.8 },
   { color: [244, 238, 222], w: 8, min: 0.5 }, { color: [242, 236, 220], w: 7, min: 0.3 }, { color: [240, 233, 216], w: 6, min: 0 }];
@@ -410,7 +422,7 @@ function labelLayers(zoom, year) {
 function render() {
   const year = state.year, zoom = map.getZoom();
   const range = [0, year], soft = [0, year - 0.8];
-  const layers = [];
+  const layers = backdrop ? [backdrop.mountains] : [];
   const road = (id, d, st, extra = {}) => new PathLayer({ id, data: d.data, coordinateSystem: OFFS, coordinateOrigin: d.origin, positionFormat: 'XY', _pathType: 'open',
     getColor: st.color, getWidth: st.w, widthUnits: 'meters', widthMinPixels: st.min, capRounded: false, jointRounded: false,
     extensions: [filterExt], filterRange: range, filterSoftRange: soft, parameters: { depthCompare: 'always' }, ...extra });
@@ -430,6 +442,8 @@ function render() {
     layers.push(new PathLayer({ id: 'transit', data: segs, getPath: (d) => d.path, getColor: (d) => d.color, getWidth: (d) => (d.kind === 'sounder' ? 9 : d.kind === 'streetcar' ? 6 : 14), widthUnits: 'meters',
       widthMinPixels: 1.5, capRounded: true, jointRounded: true, parameters: { depthCompare: 'always' } }));
   }
+  // cloud goes over the roads that run off the map, and under everything that stands up
+  if (backdrop) layers.push(...backdrop.sheets);
   if (zoom >= 12.4) for (const k of bTiles.wanted) {
     const t = bTiles.cache.get(k);
     if (t) layers.push(new SolidPolygonLayer({ id: `b-${k}`, data: t.data, coordinateSystem: OFFS, coordinateOrigin: t.origin, positionFormat: 'XY', extruded: true, _normalize: false, _windingOrder: 'CW',
@@ -474,6 +488,12 @@ function render() {
     for (let i = 0; i < 46; i++) { const a = i * 2.399, r = 30 + ((i * 53) % 190); pts.push({ p: [effect.lon + (Math.cos(a) * r) / 75000, effect.lat + (Math.sin(a) * r) / 111000], s: 0.5 + 0.5 * Math.sin(t * (5 + (i % 7)) + i) }); }
     layers.push(new ScatterplotLayer({ id: 'fire', data: pts, getPosition: (d) => d.p, getRadius: (d) => 22 + d.s * 30, getFillColor: (d) => [255, 110 + d.s * 110, 20, 150 + d.s * 80], updateTriggers: { getRadius: t, getFillColor: t }, parameters: { depthCompare: 'always' } }));
   }
+  if (backdrop) {
+    // where the camera stands: behind the centre, 1.5 screen-heights away along the view line
+    const c = map.getCenter(), br = (map.getBearing() * Math.PI) / 180, k = Math.cos((c.lat * Math.PI) / 180);
+    const back = 1.5 * map.getContainer().clientHeight * ((40075016.7 * k) / (512 * 2 ** zoom)) * Math.sin((map.getPitch() * Math.PI) / 180);
+    layers.push(backdrop.puffs(performance.now() / 1000, [c.lng - (Math.sin(br) * back) / (111320 * k), c.lat - (Math.cos(br) * back) / 110950], [c.lng, c.lat]));
+  }
   if (marker) layers.push(new ScatterplotLayer({ id: 'marker', data: [marker], getPosition: (d) => [d.lon, d.lat], getRadius: 9, radiusUnits: 'pixels', getFillColor: [181, 72, 47, 60], stroked: true, getLineColor: [181, 72, 47], lineWidthMinPixels: 2, parameters: { depthCompare: 'always' } }));
   layers.push(...labelLayers(zoom, year));
   overlay.setProps({ layers });
@@ -487,9 +507,8 @@ function setYear(y, fromSlider) {
   slider.style.setProperty('--p', `${((state.year - Y0) / (Y1 - Y0)) * 100}%`);
   yearLabel.textContent = Math.floor(state.year);
   drawGrowth();
-  if (map.getLayer('tideflats')) {
-    map.setPaintProperty('tideflats', 'fill-opacity', 0.92 * Math.max(0, Math.min(1, (1913 - state.year) / 16)));
-    map.setPaintProperty('harbor', 'fill-opacity', Math.max(0, Math.min(1, (1909.9 - state.year) / 3)));
+  drawShore();
+  if (map.getLayer('parks')) {
     map.setPaintProperty('parks', 'fill-opacity', 0.8 * Math.max(0, Math.min(1, (state.year - 1884) / 40)));
     map.setPaintProperty('cities', 'line-opacity', 0.5 * Math.max(0, Math.min(1, (state.year - 1890) / 30)));
   }
@@ -508,7 +527,7 @@ function frame(t) {
     const dt = Math.min(0.1, (t - lastT) / 1000); lastT = t;
     setYear(state.year + dt * state.speed);
     if (state.year >= Y1) setPlaying(false);
-  } else if (story.tick(t)) { /* story drives the year */ } else if (scene && map.getZoom() >= 10.3) render();
+  } else if (story.tick(t)) { /* story drives the year */ } else if (scene) render();
   requestAnimationFrame(frame);
 }
 
@@ -597,14 +616,16 @@ $('sources').innerHTML = `<h3>About this map</h3>
 <p><b>Buildings:</b> footprints and heights from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps</a> (OpenStreetMap, Microsoft and others), joined to year-built records from the <a href="https://info.kingcounty.gov/assessor/DataDownload/default.aspx" target="_blank" rel="noopener">King County Department of Assessments</a> through county parcel polygons. The assessor records anything from 1900 or earlier as “1900”; those buildings are spread over 1888–1900 by distance from the old town centres, which is an estimate. About 4% of buildings have no record and take the year of their nearest dated neighbour.</p>
 <p><b>Streets</b> (OpenStreetMap via Overture) appear when the buildings along them do, which is also an estimate. Freeways use their opening years.</p>
 <p><b>Transit:</b> OpenStreetMap routes with Sound Transit and City of Seattle opening dates. <b>Terrain:</b> Mapzen/AWS terrain tiles. <b>Population:</b> U.S. Census; 2026 from the Washington Office of Financial Management.</p>
-<p>The historic tide-flat outline is approximate. Place names before 1853 are anglicised Lushootseed names of Duwamish villages.</p>
+<p><b>Shoreline:</b> today’s water from Overture, with the old shore laid over it until the year each piece changed. Lake Washington before its 1916 lowering is the 1902 U.S. Coast &amp; Geodetic Survey (sheets T-2606 to T-2609, digitised by <a href="https://www.ngs.noaa.gov/NSDE/" target="_blank" rel="noopener">NOAA</a>). Everything else is an <i>estimate</i>: Elliott Bay, the tide flats, Smith Cove and Lake Union are traced along the streets that follow the old beach and bluff, with fill advancing outward between the first and last year of each project; the Duwamish meanders are a sketch of the pre-1913 course; Green Lake’s 1911 lowering is a uniform band.</p>
+<p><b>Beyond the county line</b> the map ends in cloud. The Olympics, the Cascades and Rainier are real elevation data, but staged: pulled in to about a third of their true distance and roughly doubled in height.</p>
+<p>Place names before 1853 are anglicised Lushootseed names of Duwamish villages.</p>
 <p>Inspired by Theo Jaffee’s <a href="https://bay.theojaffee.net/" target="_blank" rel="noopener">Bay Area Through Time</a>.</p>`;
 $('sources-btn').addEventListener('click', () => ($('sources').hidden = !$('sources').hidden));
 
 // ---------- boot ----------
 async function boot() {
   const loading = $('loading');
-  let done = 0; const total = 9;
+  let done = 0; const total = 10;
   const step = (p) => p.then((v) => { loading.textContent = `Loading Seattle… ${Math.round((++done / total) * 100)}%`; return v; });
   await Promise.all([document.fonts.load('700 20px "Cormorant Garamond"'), document.fonts.load('600 20px "Cormorant Garamond"'), document.fonts.load('italic 500 20px "Cormorant Garamond"'), new Promise((r) => map.once('load', r))]);
   map.addControl(overlay);
@@ -613,6 +634,7 @@ async function boot() {
     step(fetchBin('roads-major.bin.gz').then((b) => (roadsMajor = decodeRoads(b)))),
     step(fetchBin('rail.bin.gz').then((b) => (rail = decodeRoads(b)))),
     step(fetchJSON('scene.json').then((d) => { scene = createScene(d); lost = buildLost(d.lost, [-122.334, 47.6017]); statics = buildStatic(d); })),
+    step(Promise.all([fetchBin('terrain.bin.gz'), fetchJSON('stage.json')]).then(([b, st]) => { backdrop = createBackdrop(b, st); map.getSource('outside').setData(backdrop.outsideFill); })),
     step(fetchJSON('transit.json').then((t) => { transit = t; buildTrainPaths(); })),
     step(fetchJSON('park-labels.json').then((p) => (parkLabels = p.map((x) => ({ ...x, start: PARK_YEARS[x.name] ?? 1935 }))))),
     step(fetchJSON('cities.geojson').then((c) => {
@@ -622,7 +644,6 @@ async function boot() {
   ]);
   for (const t of bi.tiles) bTiles.have.add(`${t[0]}_${t[1]}`);
   for (const t of si.tiles) sTiles.have.add(`${t[0]}_${t[1]}`);
-  map.getSource('tideflats').setData({ type: 'FeatureCollection', features: [TIDEFLATS] });
   map.addSource('growth', { type: 'canvas', canvas: growth.canvas, coordinates: growth.coords, animate: false });
   map.addLayer({ id: 'growth', type: 'raster', source: 'growth', paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 } }, 'parks');
   buildTicks();

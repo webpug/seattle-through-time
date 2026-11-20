@@ -23,7 +23,7 @@ The processed data is committed in `public/data/` (about 36 MB), so the pipeline
 ## Data pipeline
 
 ```sh
-uv venv .venv && VIRTUAL_ENV=.venv uv pip install duckdb shapely numpy scipy pandas requests
+uv venv .venv && VIRTUAL_ENV=.venv uv pip install duckdb shapely numpy scipy pandas requests pyshp pillow
 .venv/bin/python pipeline/01_download.py assessor   # King County Assessor extracts
 .venv/bin/python pipeline/01_download.py parcels    # 637k parcel polygons (ArcGIS REST)
 .venv/bin/python pipeline/01_download.py overture   # Overture buildings, roads, water, land use
@@ -31,6 +31,8 @@ uv venv .venv && VIRTUAL_ENV=.venv uv pip install duckdb shapely numpy scipy pan
 .venv/bin/python pipeline/03_base.py                # water, parks, forest, cities, dated roads
 .venv/bin/python pipeline/04_transit.py             # transit lines + low-zoom building dots
 .venv/bin/python pipeline/05_scene.py               # lost-building reconstruction + ship/rail/freeway routes
+.venv/bin/python pipeline/06_shoreline.py           # historic shoreline patches (1902 NOAA survey + street-traced estimates)
+.venv/bin/python pipeline/07_backdrop.py            # elevation grid for the mountain backdrop + the county outline the clouds follow
 ```
 
 `04_transit.py` reads two Overpass API responses (`raw/transit_osm.json`, `raw/transit_nodes.json`); the queries are in `pipeline/overpass.txt`.
@@ -59,6 +61,8 @@ Data © OpenStreetMap contributors (ODbL), Overture Maps Foundation (CDLA-Permis
 
 Surviving buildings are real footprints with assessor dates. Everything else in the animated layer (`src/scene.js`, `public/data/scene.json`) is illustrative:
 
+- **Shoreline.** Lake Washington before 1916 is surveyed (1902 U.S. Coast & Geodetic Survey T-sheets via NOAA's Shoreline Data Rescue project WC48C01). Elliott Bay, the tide flats, Smith Cove and Lake Union are traced along streets that follow the old beach and bluff lines, and fill is dated outward from the old shore between each project's first and last year. The Duwamish meanders are a sketch; Green Lake is a uniform band. See `06_shoreline.py`.
+- **The backdrop.** Past the King County line the map ends in cloud. The mountains are real elevation data (Mapzen/AWS terrain tiles) but everything outside the mapped rectangle is pulled in to about a third of its true distance and relief is exaggerated 1.4-1.9x. Inside the county, relief is height above the valley floors and is flattened wherever there are buildings.
 - **Lost buildings** (the pre-1889 wooden town, early villages, Hooverville) are plausible lots laid along today's streets by `05_scene.py`. They appear as census population grows and vanish in the 1889 fire, the regrades, or when the building standing there today was built. They are not surveyed footprints.
 - **Hip roofs and colours** on small buildings are generated from each footprint's bounding box and era.
 - **Ships, trains, aircraft and traffic** are period-typical models on fixed routes, sped up and enlarged when zoomed out.
