@@ -36,7 +36,7 @@ const LOST_WALLS = [
   [[128, 116, 100], [108, 98, 86], [142, 126, 104], [96, 92, 88]], // 4 shack
 ];
 const LOST_ROOF = [[98, 86, 72], [108, 98, 88], [90, 86, 80], [70, 64, 60], [92, 84, 76]];
-export function buildLost(L, origin) {
+export function buildLost(L, origin, perch) {
   const n = L.x.length, sx = 1 / kx(origin[1]), sy = 1 / KY, KX0 = kx(origin[1]);
   const wp = [], we = [], wc = [], wf = [], ws = [0];
   const rp = [], rc = [], rf = [], rs = [0];
@@ -46,26 +46,29 @@ export function buildLost(L, origin) {
     const ux = Math.cos(a), uy = Math.sin(a), hw = L.w[i] / 2, hd = L.d[i] / 2, s = hash(i);
     const wall = LOST_WALLS[t][s % LOST_WALLS[t].length];
     const roofed = t === 0 || t === 1;
+    // on Denny Hill: stand on the hill, and go when the regrade gets there (or wait for it, if built afterwards)
+    const P = perch ? perch(L.x[i], L.y[i], L.s[i]) : null, lift = P && !P[2] ? 1.2 : 0, base = lift ? P[0] - lift : 0;
+    const S0 = P && P[2] ? Math.max(L.s[i], P[2]) : L.s[i], E0 = lift ? Math.min(L.e[i], P[1]) : L.e[i];
     const rh = roofed ? Math.min(hw * 0.7, 2.6) : 0, eave = L.h[i] - rh;
     const c = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd], [-hw, -hd]];
-    for (const [ox, oy] of c) { wp.push((cx + ox * ux - oy * uy) * sx, (cy + ox * uy + oy * ux) * sy); we.push(eave); wc.push(wall[0], wall[1], wall[2], 255); wf.push(L.s[i], L.e[i]); }
-    ws.push(wp.length / 2);
+    for (const [ox, oy] of c) { wp.push((cx + ox * ux - oy * uy) * sx, (cy + ox * uy + oy * ux) * sy, base); we.push(eave + lift); wc.push(wall[0], wall[1], wall[2], 255); wf.push(S0, E0); }
+    ws.push(wp.length / 3);
     if (roofed) {
       // long axis of the lot is its depth (perpendicular to the street)
       const long = hd >= hw;
-      hipRoof(rp, rc, rs, () => rf.push(L.s[i], L.e[i]), cx, cy, long ? -uy : ux, long ? ux : uy, Math.max(hw, hd) + 0.3, Math.min(hw, hd) + 0.3, eave, rh, LOST_ROOF[s % 3], sx, sy);
+      hipRoof(rp, rc, rs, () => rf.push(S0, E0), cx, cy, long ? -uy : ux, long ? ux : uy, Math.max(hw, hd) + 0.3, Math.min(hw, hd) + 0.3, base + lift + eave, rh, LOST_ROOF[s % 3], sx, sy);
     } else if (t === 2 || t === 3) {
       // false front / cornice: a slightly taller slab along the street side
       const d0 = -hd, d1 = -hd + 0.8, hh = t === 3 ? 1.2 : 1.6;
-      for (const [ox, oy] of [[-hw, d0], [hw, d0], [hw, d1], [-hw, d1], [-hw, d0]]) { wp.push((cx + ox * ux - oy * uy) * sx, (cy + ox * uy + oy * ux) * sy); we.push(L.h[i] + hh); wc.push(wall[0] * 0.92, wall[1] * 0.92, wall[2] * 0.92, 255); wf.push(L.s[i], L.e[i]); }
-      ws.push(wp.length / 2);
+      for (const [ox, oy] of [[-hw, d0], [hw, d0], [hw, d1], [-hw, d1], [-hw, d0]]) { wp.push((cx + ox * ux - oy * uy) * sx, (cy + ox * uy + oy * ux) * sy, base); we.push(L.h[i] + hh + lift); wc.push(wall[0] * 0.92, wall[1] * 0.92, wall[2] * 0.92, 255); wf.push(S0, E0); }
+      ws.push(wp.length / 3);
     }
     if ((L.e[i] > 1889.43 && L.e[i] < 1889.9 && t !== 3) || (t === 4 && i % 6 === 0)) burning.push({ lon: L.x[i], lat: L.y[i], e: L.e[i], k: i });
   }
   const bin = (p, size, c, f, st, e) => ({ length: st.length - 1, startIndices: new Uint32Array(st), attributes: {
     getPolygon: { value: new Float32Array(p), size }, getFillColor: { value: new Uint8Array(c), size: 4, normalized: true }, getFilterValue: { value: new Float32Array(f), size: 2 },
     ...(e ? { getElevation: { value: new Float32Array(e), size: 1 } } : {}) } });
-  return { origin: [origin[0], origin[1], 0], walls: bin(wp, 2, wc, wf, ws, we), roofs: bin(rp, 3, rc, rf, rs), burning };
+  return { origin: [origin[0], origin[1], 0], walls: bin(wp, 3, wc, wf, ws, we), roofs: bin(rp, 3, rc, rf, rs), burning };
 }
 
 // ---------- prism helpers for models ----------
@@ -298,7 +301,8 @@ const LANDMARKS = [
     box(out, o, -5.8, 8, 5.8, 11.8, 8.2, 1.2, C.white); poly(out, o, ngon(2, 8), 11.2, 3.4, C.white); poly(out, o, ngon(1.4, 8), 14.6, 1.6, [110, 104, 98]);
   } },
   // Denny (Washington) Hotel on top of Denny Hill
-  { from: 1890.5, to: 1906.6, lon: -122.3412, lat: 47.6128, head: 328, draw(out, o) {
+  { from: 1890.5, to: 1906.6, lon: -122.34035, lat: 47.61196, head: 328, hill: true, draw(out, o) {
+    box(out, o, -16, -47, 16, 47, -9, 9, [196, 170, 128]);
     box(out, o, -14, -45, 14, 45, 0, 20, [150, 96, 76]); box(out, o, -14.6, -45.6, 14.6, 45.6, 20, 1, [80, 70, 66]); box(out, o, -9, -40, 9, 40, 21, 4, [92, 78, 72]);
     for (const y of [-45, 0, 45]) { poly(out, o, ngon(7, 8, 0, y), 0, 29, [162, 104, 82]); poly(out, o, ngon(5, 8, 0, y), 29, 5, [88, 76, 70]); poly(out, o, ngon(2.4, 8, 0, y), 34, 5, [88, 76, 70]); }
   } },
@@ -324,7 +328,7 @@ const LANDMARKS = [
 // Alaskan Way Viaduct, 1953-2019 (hand-traced, approximate)
 const VIADUCT = makeRoute([[-122.3369, 47.5900], [-122.3363, 47.5955], [-122.3361, 47.5990], [-122.3366, 47.6015], [-122.3391, 47.6040], [-122.3413, 47.6065], [-122.3427, 47.6083], [-122.3449, 47.6106], [-122.3479, 47.6136]]);
 
-export function createScene(data) {
+export function createScene(data, ground) {
   const routes = {};
   for (const k in data.routes) if (data.routes[k]) routes[k] = makeRoute(data.routes[k], false);
   for (const k in AIR) routes[k] = makeRoute(AIR[k], k !== 'union');
@@ -375,7 +379,7 @@ export function createScene(data) {
     }
     for (const L of LANDMARKS) {
       if (year < L.from || year >= L.to || !vis(L.lon, L.lat)) continue;
-      const o = frame(L.lon, L.lat, L.head, L.ship ? kShip : 1), em = [];
+      const o = frame(L.lon, L.lat, L.head, L.ship ? kShip : 1, L.hill && ground ? ground(L.lon, L.lat, year) : 0), em = [];
       L.draw(prisms, o, t, em, year); puff(o, em, 0, 5);
     }
     if (year >= 1953.25 && year < 2019.45 && zoom >= 12 && vis(-122.339, 47.604)) {

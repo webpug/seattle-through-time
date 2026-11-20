@@ -13,6 +13,7 @@ import { POP, PLACES, EVENTS, STORY, PARK_YEARS } from './content.js';
 import { createScene, buildLost, hipRoof, kx, KY } from './scene.js';
 import { buildStatic } from './landmarks.js';
 import { createBackdrop, STAGE } from './backdrop.js';
+import * as regrade from './regrade.js';
 
 const Y0 = 1851, Y1 = 2026.99;
 const $ = (id) => document.getElementById(id);
@@ -143,7 +144,23 @@ async function loadGrowth() {
   const canvas = document.createElement('canvas'); canvas.width = h.w; canvas.height = h.h;
   const ctx = canvas.getContext('2d'); const img = ctx.createImageData(h.w, h.h);
   const x1 = h.x0 + h.w * h.cw;
-  growth = { g1: halo, g4: g1, canvas, ctx, img, n, last: -1, coords: [[h.x0, h.y1], [x1, h.y1], [x1, latS], [h.x0, latS]] };
+  growth = { g1: halo, g4: g1, canvas, ctx, img, n, last: -1, w: h.w, h: h.h, x0: h.x0, x1, mN, mS, merc, coords: [[h.x0, h.y1], [x1, h.y1], [x1, latS], [h.x0, latS]] };
+}
+// the same colour the growth raster paints at a point, for things that have to match the ground
+const LAND = [138, 165, 111];
+function groundColour(lon, lat, year) {
+  if (!growth) return LAND;
+  const { g1, g4, w, h } = growth, y = Math.floor(year);
+  const u = ((lon - growth.x0) / (growth.x1 - growth.x0)) * w - 0.5, v = ((growth.merc(lat) - growth.mN) / (growth.mS - growth.mN)) * h - 0.5;
+  const c0 = Math.floor(u), r0 = Math.floor(v), fu = u - c0, fv = v - r0, out = [0, 0, 0];
+  for (let k = 0; k < 4; k++) {
+    const c = Math.min(w - 1, Math.max(0, c0 + (k & 1))), r = Math.min(h - 1, Math.max(0, r0 + (k >> 1))), i = r * w + c, wt = (k & 1 ? fu : 1 - fu) * (k >> 1 ? fv : 1 - fv);
+    const a = g1[i], b = g4[i];
+    let al = 0, col = LAND;
+    if (a && a <= y) { const dense = b && b <= y, age = Math.min(1, (y - a) / 12); col = dense ? [230, 220, 196] : [224, 216, 178]; al = (dense ? 215 + 40 * age : 120 + 70 * age) / 255; }
+    for (let j = 0; j < 3; j++) out[j] += wt * (LAND[j] + (col[j] - LAND[j]) * al);
+  }
+  return out;
 }
 function drawGrowth() {
   if (!growth) return;
@@ -203,6 +220,7 @@ function decodeBuildings(buf) {
     let h = Math.min(hts[i] / 10, 290), yr = years[i];
     const m = cnt[i], seed = (xy[v * 2] * 31 + xy[v * 2 + 1] * 17 + i) >>> 0;
     let c = colourFor(yr, h, seed);
+    yr = regrade.delay(ox + xy[v * 2] * qx, oy + xy[v * 2 + 1] * qy, yr);
     if (h > 100) for (const sk of SKIP) if (h >= sk[2] && Math.abs(ox + xy[v * 2] * qx - sk[0]) < 0.0008 && Math.abs(oy + xy[v * 2 + 1] * qy - sk[1]) < 0.0006) yr = 9999;
     if (h <= 12.5 && m >= 4 && m <= 14) {
       // oriented bounding box along the longest wall
@@ -404,11 +422,11 @@ function labelLayers(zoom, year) {
     p.tier === 1 || (p.tier === 2 && zoom >= 9.3) || (p.tier === 3 && zoom >= 11.7) || (p.tier === 4 && zoom >= 9) || (p.tier === 5 && zoom >= 10.6)));
   // white lettering with a dark outline reads on forest, water and rooftops alike
   const common = { fontFamily: 'Cormorant Garamond', fontWeight: 700, fontSettings: { sdf: true, fontSize: 72, buffer: 12, radius: 16, cutoff: 0.2 }, outlineWidth: 6, outlineColor: [38, 30, 24, 255],
-    getPosition: (d) => [d.lon, d.lat, d.z || 0], getText: (d) => d.name, parameters: { depthCompare: 'always' }, billboard: true, characterSet: 'auto' };
+    getPosition: (d) => [d.lon, d.lat, d.name === 'Denny Hill' ? regrade.height(d.lon, d.lat, year) + 14 : 0], updateTriggers: { getPosition: Math.round(year * 8) }, getText: (d) => d.name, parameters: { depthCompare: 'always' }, billboard: true, characterSet: 'auto' };
   const SIZE = [0, 30, 21, 15.5, 19, 18], COLOR = [0, [255, 255, 250, 255], [255, 253, 244, 255], [250, 246, 234, 255], [214, 236, 250, 255], [255, 232, 176, 255]];
   const out = [
     new TextLayer({ ...common, id: 'labels', data: vis, getSize: (d) => SIZE[d.tier], getColor: (d) => COLOR[d.tier],
-      getText: (d) => (d.tier === 3 ? d.name.toUpperCase() : d.name), updateTriggers: { getText: 1 } }),
+      getText: (d) => (d.tier === 3 ? d.name.toUpperCase() : d.name), updateTriggers: { getText: 1, getPosition: Math.round(year * 8) } }),
   ];
   if (zoom >= 12.8) {
     const minHa = zoom >= 14.6 ? 2 : zoom >= 13.6 ? 12 : 40;
@@ -420,7 +438,7 @@ function labelLayers(zoom, year) {
   return out;
 }
 function render() {
-  const year = state.year, zoom = map.getZoom();
+  const year = state.year, zoom = map.getZoom(), now = performance.now() / 1000;
   const range = [0, year], soft = [0, year - 0.8];
   const layers = backdrop ? [backdrop.mountains] : [];
   const road = (id, d, st, extra = {}) => new PathLayer({ id, data: d.data, coordinateSystem: OFFS, coordinateOrigin: d.origin, positionFormat: 'XY', _pathType: 'open',
@@ -444,6 +462,9 @@ function render() {
   }
   // cloud goes over the roads that run off the map, and under everything that stands up
   if (backdrop) layers.push(...backdrop.sheets);
+  // Denny Hill, while it lasts: over the flat streets, under everything that stands on it
+  const hill = regrade.layers(year, now, zoom, MAT, groundColour);
+  layers.push(...hill.ground);
   if (zoom >= 12.4) for (const k of bTiles.wanted) {
     const t = bTiles.cache.get(k);
     if (t) layers.push(new SolidPolygonLayer({ id: `b-${k}`, data: t.data, coordinateSystem: OFFS, coordinateOrigin: t.origin, positionFormat: 'XY', extruded: true, _normalize: false, _windingOrder: 'CW',
@@ -453,7 +474,7 @@ function render() {
   }
   if (lost && zoom >= 11.6) {
     const r2 = [[0, year], [year, 1e5]], s2 = [[0, year - 0.5], [year + 0.12, 1e5]];
-    layers.push(new SolidPolygonLayer({ id: 'lost', data: lost.walls, coordinateSystem: OFFS, coordinateOrigin: lost.origin, positionFormat: 'XY', extruded: true, _normalize: false, _windingOrder: 'CCW',
+    layers.push(new SolidPolygonLayer({ id: 'lost', data: lost.walls, coordinateSystem: OFFS, coordinateOrigin: lost.origin, positionFormat: 'XYZ', extruded: true, _normalize: false, _windingOrder: 'CCW',
       material: MAT, extensions: [filterExt2], filterRange: r2, filterSoftRange: s2 }));
     layers.push(new SolidPolygonLayer({ id: 'lost-roofs', data: lost.roofs, coordinateSystem: OFFS, coordinateOrigin: lost.origin, positionFormat: 'XYZ', extruded: false, _normalize: false,
       material: false, extensions: [filterExt2], filterRange: r2, filterSoftRange: s2 }));
@@ -477,6 +498,7 @@ function render() {
       getFillColor: (d) => (d.dark ? [70, 62, 58, d.a] : [236, 232, 226, d.a]), parameters: { depthWriteEnabled: false } }));
     if (flames.length) layers.push(new ScatterplotLayer({ id: 'flames', data: flames, getPosition: (d) => d.p, getRadius: (d) => d.r, getFillColor: (d) => d.c, billboard: true, parameters: { depthWriteEnabled: false } }));
   }
+  layers.push(...hill.fx);
   if (transit && zoom >= 10.8) {
     layers.push(new ScatterplotLayer({ id: 'stations', data: transit.stations.filter((s) => s.start <= year && zoom >= 12), getPosition: (d) => [d.lon, d.lat], getRadius: 13, radiusMinPixels: 2.2, radiusMaxPixels: 7,
       getFillColor: [255, 255, 255], stroked: true, getLineColor: [40, 40, 40], lineWidthMinPixels: 1.2, parameters: { depthCompare: 'always' } }));
@@ -617,6 +639,7 @@ $('sources').innerHTML = `<h3>About this map</h3>
 <p><b>Streets</b> (OpenStreetMap via Overture) appear when the buildings along them do, which is also an estimate. Freeways use their opening years.</p>
 <p><b>Transit:</b> OpenStreetMap routes with Sound Transit and City of Seattle opening dates. <b>Terrain:</b> Mapzen/AWS terrain tiles. <b>Population:</b> U.S. Census; 2026 from the Washington Office of Financial Management.</p>
 <p><b>Shoreline:</b> today’s water from Overture, with the old shore laid over it until the year each piece changed. Lake Washington before its 1916 lowering is the 1902 U.S. Coast &amp; Geodetic Survey (sheets T-2606 to T-2609, digitised by <a href="https://www.ngs.noaa.gov/NSDE/" target="_blank" rel="noopener">NOAA</a>). Everything else is an <i>estimate</i>: Elliott Bay, the tide flats, Smith Cove and Lake Union are traced along the streets that follow the old beach and bluff, with fill advancing outward between the first and last year of each project; the Duwamish meanders are a sketch of the pre-1913 course; Green Lake’s 1911 lowering is a uniform band.</p>
+<p><b>Denny Hill</b> is drawn as the earth the regrades took away, standing on today’s ground and one and a half times its true height so it reads against the buildings. It is an <i>estimate</i>, not a survey: a smooth surface fitted to the cuts on record (107 feet at 4th and Blanchard, 89 feet east of 5th, 17 feet on 1st Avenue, about 60 feet at Denny Park) and to each regrade’s reported volume. The five regrades run between their recorded start and finish dates (1898–99, 1903–06, 1906–08, 1908–11, 1929–30), but the path each cut took across its blocks, the spite mounds and the machines are illustrative. Figures from <a href="https://www.historylink.org/File/21204" target="_blank" rel="noopener">HistoryLink</a> and the city’s Belltown and Denny Triangle historic surveys.</p>
 <p><b>Beyond the county line</b> the map ends in cloud. The Olympics, the Cascades and Rainier are real elevation data, but staged: pulled in to about a third of their true distance and roughly doubled in height.</p>
 <p>Place names before 1853 are anglicised Lushootseed names of Duwamish villages.</p>
 <p>Inspired by Theo Jaffee’s <a href="https://bay.theojaffee.net/" target="_blank" rel="noopener">Bay Area Through Time</a>.</p>`;
@@ -633,7 +656,7 @@ async function boot() {
     step(loadGrowth()),
     step(fetchBin('roads-major.bin.gz').then((b) => (roadsMajor = decodeRoads(b)))),
     step(fetchBin('rail.bin.gz').then((b) => (rail = decodeRoads(b)))),
-    step(fetchJSON('scene.json').then((d) => { scene = createScene(d); lost = buildLost(d.lost, [-122.334, 47.6017]); statics = buildStatic(d); })),
+    step(fetchJSON('scene.json').then((d) => { scene = createScene(d, regrade.height); lost = buildLost(d.lost, [-122.334, 47.6017], regrade.perch); statics = buildStatic(d); })),
     step(Promise.all([fetchBin('terrain.bin.gz'), fetchJSON('stage.json')]).then(([b, st]) => { backdrop = createBackdrop(b, st); map.getSource('outside').setData(backdrop.outsideFill); })),
     step(fetchJSON('transit.json').then((t) => { transit = t; buildTrainPaths(); })),
     step(fetchJSON('park-labels.json').then((p) => (parkLabels = p.map((x) => ({ ...x, start: PARK_YEARS[x.name] ?? 1935 }))))),
